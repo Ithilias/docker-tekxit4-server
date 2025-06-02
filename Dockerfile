@@ -1,6 +1,6 @@
 FROM eclipse-temurin:17-jre-focal
 
-ARG VERSION="12.0.0"
+ARG VERSION="16.0.0"
 
 ENV USER=minecraft
 ENV UID=1000
