@@ -36,10 +36,18 @@ RUN chmod +x /entrypoint
 RUN adduser --disabled-password --gecos "" --uid "${UID}" "${USER}" && \
     mkdir /tekxit-server && \
     chown -R "${USER}" /tekxit-server && \
-    curl -sSL "https://tekxit.b-cdn.net/downloads/tekxit4/${VERSION}Tekxit4Server.zip" -o tekxit-server.zip && \
+    if curl -sSL --head --fail "https://tekxit.b-cdn.net/downloads/tekxit4/${VERSION}Tekxit4Server.zip" > /dev/null 2>&1; then \
+        curl -sSL "https://tekxit.b-cdn.net/downloads/tekxit4/${VERSION}Tekxit4Server.zip" -o tekxit-server.zip; \
+    else \
+        DOWNLOAD_URL=$(curl -sSL "https://api.technicpack.net/modpack/tekxit-4-official?build=latest" | \
+        grep -o '"serverPackUrl":"[^"]*"' | \
+        cut -d'"' -f4) && \
+        curl -sSL "${DOWNLOAD_URL}" -o tekxit-server.zip; \
+    fi && \
     unzip tekxit-server.zip && \
-    mv ${VERSION}Tekxit4Server/* /tekxit-server && \
-    rmdir ${VERSION}Tekxit4Server && \
+    EXTRACTED_DIR=$(unzip -Z -1 tekxit-server.zip | head -1 | cut -d'/' -f1) && \
+    mv "${EXTRACTED_DIR}"/* /tekxit-server && \
+    rmdir "${EXTRACTED_DIR}" && \
     rm tekxit-server.zip
 
 # Add update indicator

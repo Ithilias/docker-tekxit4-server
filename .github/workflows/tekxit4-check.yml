@@ -3,6 +3,7 @@ name: Tekxit4 Version Auto-Updater
 on:
   schedule:
     - cron: '5 2 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
