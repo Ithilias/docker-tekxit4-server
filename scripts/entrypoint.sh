@@ -1,33 +1,91 @@
 #!/bin/bash
+set -euo pipefail
 
 # Constants for default RCON values
 DEFAULT_RCON_PORT=25575
-DEFAULT_RCON_PASSWORD='foobar'
 
 # Function to handle TERM signal
 shutdown_handler() {
     echo "TERM signal received, attempting to shut down the server..."
 
     # Try to gracefully shut down the server using rcon-cli
-    if ! rcon-cli --host localhost --port ${RCON_PORT:-$DEFAULT_RCON_PORT} --password ${RCON_PASSWORD:-$DEFAULT_RCON_PASSWORD} stop; then
+    if ! rcon-cli --host localhost --port "${RCON_PORT:-$DEFAULT_RCON_PORT}" --password "${RCON_PASSWORD}" stop; then
         echo "Failed to send the stop command via rcon-cli, forcing the server to stop..."
         # Forcefully terminate the server process if rcon-cli fails
-        kill -TERM $SERVER_PID
+        kill -TERM "$SERVER_PID"
 
         # Wait a little to see if the process terminates
         sleep 5
 
         # If the server still didn't stop, kill it harshly
-        if kill -0 $SERVER_PID > /dev/null 2>&1; then
+        if kill -0 "$SERVER_PID" > /dev/null 2>&1; then
             echo "Server did not shut down, sending KILL signal..."
-            kill -KILL $SERVER_PID
+            kill -KILL "$SERVER_PID"
         fi
     else
         echo "Server is shutting down gracefully..."
     fi
 
     # Wait for the server to stop
-    wait $SERVER_PID
+    wait "$SERVER_PID"
+}
+
+copy_server_file() {
+    local file_name=$1
+
+    echo "Copying ${file_name} to /data..."
+    cp "/tekxit-server/${file_name}" "/data/${file_name}"
+}
+
+contains_item() {
+    local item=$1
+    shift
+
+    local list_item
+    for list_item in "$@"; do
+        if [ "${list_item}" = "${item}" ]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+sync_server_directory() {
+    local dir_name=$1
+    local config_defaults_dir
+
+    mkdir -p "/data/${dir_name}"
+
+    case "${dir_name}" in
+        config)
+            config_defaults_dir="/data/config-defaults/${IMAGE_VERSION:-unknown}"
+            echo "Saving default config files to ${config_defaults_dir}..."
+            rm -rf "${config_defaults_dir}"
+            mkdir -p "${config_defaults_dir}"
+            cp -R "/tekxit-server/${dir_name}" "${config_defaults_dir}/"
+
+            echo "Adding new default config files without overwriting local config..."
+            cp -Rn "/tekxit-server/${dir_name}/." "/data/${dir_name}/"
+            ;;
+        *)
+            echo "Replacing ${dir_name} directory with server pack defaults..."
+            rm -rf "/data/${dir_name}"
+            cp -R "/tekxit-server/${dir_name}" "/data/"
+            ;;
+    esac
+}
+
+set_property() {
+    local key=$1
+    local value=$2
+    local file=/data/server.properties
+    local tmp_file
+
+    tmp_file=$(mktemp)
+    grep -v "^${key}=" "${file}" > "${tmp_file}" || true
+    printf '%s=%s\n' "${key}" "${value}" >> "${tmp_file}"
+    mv "${tmp_file}" "${file}"
 }
 
 # Set the trap for the TERM signal
@@ -39,14 +97,23 @@ if [ ! -d /data ]; then
     mkdir /data
 fi
 
+if [ -z "${RCON_PASSWORD:-}" ]; then
+    echo "RCON_PASSWORD is required. Set it in your environment or .env file." >&2
+    exit 1
+fi
+
 # Check for update indicator
-if [ -f /tekxit-server/update_indicator ]; then
-    echo "Update indicator found, updating server..."
+IMAGE_VERSION=$(cat /tekxit-server/.tekxit-version 2>/dev/null || true)
+DATA_VERSION=$(cat /data/.tekxit-version 2>/dev/null || true)
+
+if [ -f /tekxit-server/update_indicator ] && [ "${IMAGE_VERSION}" != "${DATA_VERSION}" ]; then
+    echo "Update indicator found, updating server from '${DATA_VERSION:-unknown}' to '${IMAGE_VERSION:-unknown}'..."
     # Remove the update indicator
     rm -f /tekxit-server/update_indicator
 
-    # List of files to exclude from /tekxit-server to /data
-    files_to_exclude=("server.properties" "eula.txt")
+    # Files managed by the running server or local admin, not the image update.
+    files_to_exclude=("server.properties" "eula.txt" "banned-ips.json" "banned-players.json" "ops.json" "usercache.json" "whitelist.json")
+    dirs_to_exclude=("logs" "crash-reports" "world" "world_nether" "world_the_end")
 
     # Iterate over the files in /tekxit-server
     for item in /tekxit-server/*; do
@@ -56,16 +123,8 @@ if [ -f /tekxit-server/update_indicator ]; then
             file_name=$(basename "$item")
 
             # If the file is not in the exclusion list
-            if [[ ! " ${files_to_exclude[@]} " =~ " ${file_name} " ]]; then
-                # If the file exists in /data, remove it
-                if [ -f "/data/$file_name" ]; then
-                    echo "Removing existing $file_name in /data..."
-                    rm -f "/data/$file_name"
-                fi
-
-                # Copy the file from /tekxit-server to /data
-                echo "Copying $file_name to /data..."
-                cp "$item" "/data/"
+            if ! contains_item "${file_name}" "${files_to_exclude[@]}"; then
+                copy_server_file "${file_name}"
             fi
         fi
 
@@ -74,22 +133,20 @@ if [ -f /tekxit-server/update_indicator ]; then
             # Extract the directory name
             dir_name=$(basename "$item")
 
-            # If the directory exists in /data, remove it
-            if [ -d "/data/$dir_name" ]; then
-                echo "Removing existing $dir_name directory in /data..."
-                rm -rf "/data/$dir_name"
+            if contains_item "${dir_name}" "${dirs_to_exclude[@]}"; then
+                continue
             fi
 
-            # Copy the directory from /tekxit-server to /data
-            echo "Copying $dir_name directory to /data..."
-            cp -R "$item" "/data/"
+            sync_server_directory "${dir_name}"
         fi
     done
+
+    printf '%s\n' "${IMAGE_VERSION}" > /data/.tekxit-version
 fi
 
 # create eula.txt with EULA env variable if it does not exist
 if [ ! -f /data/eula.txt ]; then
-    echo "eula=$EULA" > /data/eula.txt
+    echo "eula=${EULA:-false}" > /data/eula.txt
 fi
 
 # Check if server.properties exists
@@ -98,27 +155,33 @@ if [ ! -f /data/server.properties ]; then
     cp /tekxit-server/server.properties /data/server.properties
 fi
 
+# update server.properties with rcon configuration
+set_property "enable-rcon" "true"
+set_property "rcon.port" "${RCON_PORT:-$DEFAULT_RCON_PORT}"
+set_property "rcon.password" "${RCON_PASSWORD}"
+
 # set owner of data dir to minecraft user
 chown -R minecraft:minecraft /data
 
-# update server.properties with rcon configuration
-sed -i "s/^enable-rcon=.*$/enable-rcon=true/" /data/server.properties
-sed -i "s/^rcon.port=.*$/rcon.port=${RCON_PORT:-$DEFAULT_RCON_PORT}/" /data/server.properties
-sed -i "s/^rcon.password=.*$/rcon.password=${RCON_PASSWORD:-$DEFAULT_RCON_PASSWORD}/" /data/server.properties
-
 # Extract the line that contains the .jar item
-jar_line=$(grep -oP '[\w-]+\.jar' ServerLinux.sh)
+jar_line=$(grep -m 1 -oP '[\w-]+\.jar' ServerLinux.sh || true)
+if [ -z "${jar_line}" ]; then
+    echo "Could not determine server jar from ServerLinux.sh" >&2
+    exit 1
+fi
 
-echo $jar_line
+echo "${jar_line}"
 
-exec gosu minecraft \
+read -r -a java_additional_args <<< "${JAVA_ADDITIONAL_ARGS:-}"
+
+gosu minecraft \
   java \
     -server \
-    -Xmx${JAVA_XMX} \
-    -Xms${JAVA_XMS} \
-    ${JAVA_ADDITIONAL_ARGS} \
-    -jar ${jar_line} nogui \
+    "-Xmx${JAVA_XMX}" \
+    "-Xms${JAVA_XMS}" \
+    "${java_additional_args[@]}" \
+    -jar "${jar_line}" nogui \
     & SERVER_PID=$!
 
 # Wait for the server to stop
-wait $SERVER_PID
+wait "$SERVER_PID"

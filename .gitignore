@@ -19,6 +19,9 @@ crash-reports/
 mods/
 
 # Temporary files and directories
+.env
+.env.*
+!.env.example
 *.tmp
 *.swp
 *.swo

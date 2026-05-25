@@ -1,6 +1,15 @@
 FROM eclipse-temurin:17-jre-focal
 
 ARG VERSION="16.8.8"
+ARG BUILDTIME
+ARG REVISION
+
+LABEL org.opencontainers.image.title="docker-tekxit4-server" \
+      org.opencontainers.image.description="Docker image for a Tekxit 4 Minecraft server" \
+      org.opencontainers.image.source="https://github.com/Ithilias/docker-tekxit4-server" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.created="${BUILDTIME}" \
+      org.opencontainers.image.revision="${REVISION}"
 
 ENV USER=minecraft
 ENV UID=1000
@@ -10,7 +19,7 @@ ENV JAVA_ADDITIONAL_ARGS=""
 
 # Install necessary packages and clean up
 RUN apt-get update && \
-    apt-get install -y unzip curl gosu && \
+    apt-get install -y unzip curl gosu jq && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -20,13 +29,17 @@ RUN ARCH=$(uname -m) && \
         aarch64) ARCH="arm64" ;; \
         x86_64) ARCH="amd64" ;; \
     esac && \
-    LATEST_VERSION=$(curl -sSL https://api.github.com/repos/itzg/rcon-cli/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/') && \
+    LATEST_VERSION=$(curl -sSL https://api.github.com/repos/itzg/rcon-cli/releases/latest | jq -r '.tag_name') && \
     echo "LATEST_VERSION: ${LATEST_VERSION}" && \
     echo "ARCH: ${ARCH}" && \
+    CHECKSUM_FILE="rcon-cli_${LATEST_VERSION}_checksums.txt" && \
+    RCON_ARCHIVE="rcon-cli_${LATEST_VERSION}_linux_${ARCH}.tar.gz" && \
+    curl -sSL "https://github.com/itzg/rcon-cli/releases/download/${LATEST_VERSION}/${CHECKSUM_FILE}" -o "${CHECKSUM_FILE}" && \
     curl -sSL "https://github.com/itzg/rcon-cli/releases/download/${LATEST_VERSION}/rcon-cli_${LATEST_VERSION}_linux_${ARCH}.tar.gz" -o rcon-cli.tar.gz && \
+    grep " ${RCON_ARCHIVE}$" "${CHECKSUM_FILE}" | sed 's/  .*$/  rcon-cli.tar.gz/' | sha256sum -c - && \
     tar -xzf rcon-cli.tar.gz rcon-cli && \
     mv rcon-cli /usr/local/bin && \
-    rm rcon-cli.tar.gz
+    rm rcon-cli.tar.gz "${CHECKSUM_FILE}"
 
 # Add entrypoint script
 COPY ./scripts/entrypoint.sh /entrypoint
@@ -39,9 +52,7 @@ RUN adduser --disabled-password --gecos "" --uid "${UID}" "${USER}" && \
     if curl -sSL --head --fail "https://tekxit.b-cdn.net/downloads/tekxit4/${VERSION}Tekxit4Server.zip" > /dev/null 2>&1; then \
         curl -sSL "https://tekxit.b-cdn.net/downloads/tekxit4/${VERSION}Tekxit4Server.zip" -o tekxit-server.zip; \
     else \
-        DOWNLOAD_URL=$(curl -sSL "https://api.technicpack.net/modpack/tekxit-4-official?build=latest" | \
-        grep -o '"serverPackUrl":"[^"]*"' | \
-        cut -d'"' -f4) && \
+        DOWNLOAD_URL=$(curl -sSL "https://api.technicpack.net/modpack/tekxit-4-official?build=latest" | jq -r '.serverPackUrl') && \
         curl -sSL "${DOWNLOAD_URL}" -o tekxit-server.zip; \
     fi && \
     unzip tekxit-server.zip && \
@@ -52,9 +63,12 @@ RUN adduser --disabled-password --gecos "" --uid "${UID}" "${USER}" && \
 
 # Add update indicator
 RUN touch /tekxit-server/update_indicator
+RUN echo "${VERSION}" > /tekxit-server/.tekxit-version
 
 WORKDIR /data
 
 EXPOSE 25565
 EXPOSE 25575
+EXPOSE 24454/udp
+HEALTHCHECK --start-period=5m --interval=30s --timeout=10s --retries=3 CMD rcon-cli --host localhost --port "${RCON_PORT:-25575}" --password "${RCON_PASSWORD}" list > /dev/null
 ENTRYPOINT ["/bin/bash", "/entrypoint"]
