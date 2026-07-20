@@ -19,20 +19,20 @@ jobs:
           fetch-depth: 0
 
       - name: Get Current Version
-        run: echo "CURRENT_VERSION=$(grep -oP '(?<=\bVERSION=")[^"]+' ./Dockerfile)" >> $GITHUB_ENV
+        run: echo "CURRENT_VERSION=$(grep -oP '(?<=\bVERSION=")[^"]+' ./Dockerfile)" >> "$GITHUB_ENV"
 
       - name: Print Stored Version Number
         run: echo ${{ env.CURRENT_VERSION }}
 
       - name: Get Repository Version
-        run: echo "REPO_VERSION=$(curl -sL https://api.technicpack.net/modpack/tekxit-4-official?build=latest | jq -r ".version")" >> $GITHUB_ENV
+        run: echo "REPO_VERSION=$(curl -sL https://api.technicpack.net/modpack/tekxit-4-official?build=latest | jq -r ".version")" >> "$GITHUB_ENV"
 
       - name: Print Repository Version
         run: echo ${{ env.REPO_VERSION }}
 
       - name: Update Dockerfile Version
         if: ${{ env.CURRENT_VERSION != env.REPO_VERSION }}
-        run: sed -i "s/${{ env.CURRENT_VERSION }}/${{ env.REPO_VERSION }}/" ./Dockerfile
+        run: sed -i "s/^ARG VERSION=.*/ARG VERSION=\"${{ env.REPO_VERSION }}\"/" ./Dockerfile
 
       - name: Login to GitHub Container Registry
         if: ${{ env.CURRENT_VERSION != env.REPO_VERSION }}
@@ -60,10 +60,47 @@ jobs:
         if: ${{ env.CURRENT_VERSION != env.REPO_VERSION }}
         uses: docker/setup-buildx-action@v3
 
+      - name: Build image for smoke test
+        if: ${{ env.CURRENT_VERSION != env.REPO_VERSION }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: tekxit-smoke:test
+          build-args: |
+            VERSION=${{ env.REPO_VERSION }}
+          cache-to: type=gha
+          cache-from: type=gha
+
+      - name: Smoke test server startup
+        if: ${{ env.CURRENT_VERSION != env.REPO_VERSION }}
+        run: |
+          docker run -d --name tekxit-smoke -e EULA=true -e RCON_PASSWORD=smoketest tekxit-smoke:test
+          echo "Waiting for the server to become healthy (up to 15 minutes)..."
+          for _ in $(seq 1 90); do
+            if [ "$(docker inspect --format '{{.State.Health.Status}}' tekxit-smoke)" = "healthy" ]; then
+              echo "Server is healthy."
+              docker rm -f tekxit-smoke
+              exit 0
+            fi
+            if [ "$(docker inspect --format '{{.State.Status}}' tekxit-smoke)" != "running" ]; then
+              echo "Container exited unexpectedly."
+              break
+            fi
+            sleep 10
+          done
+          echo "Smoke test failed, container logs:"
+          docker logs tekxit-smoke
+          docker rm -f tekxit-smoke
+          exit 1
+
       - name: Build and publish image
         if: ${{ env.CURRENT_VERSION != env.REPO_VERSION }}
         id: docker_build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile

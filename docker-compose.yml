@@ -1,6 +1,8 @@
 services:
   tekxit:
     container_name: tekxit
+    restart: unless-stopped
+    stop_grace_period: 2m
     build:
       context: .
     environment:

@@ -1,4 +1,4 @@
-FROM eclipse-temurin:17-jre-focal
+FROM eclipse-temurin:17-jre-jammy
 
 ARG VERSION="16.8.8"
 ARG BUILDTIME
@@ -41,10 +41,6 @@ RUN ARCH=$(uname -m) && \
     mv rcon-cli /usr/local/bin && \
     rm rcon-cli.tar.gz "${CHECKSUM_FILE}"
 
-# Add entrypoint script
-COPY ./scripts/entrypoint.sh /entrypoint
-RUN chmod +x /entrypoint
-
 # Create user, download and unpack Tekxit server files, and set up directories
 RUN adduser --disabled-password --gecos "" --uid "${UID}" "${USER}" && \
     mkdir /tekxit-server && \
@@ -62,13 +58,16 @@ RUN adduser --disabled-password --gecos "" --uid "${UID}" "${USER}" && \
     rm tekxit-server.zip
 
 # Add update indicator
-RUN touch /tekxit-server/update_indicator
-RUN echo "${VERSION}" > /tekxit-server/.tekxit-version
+RUN touch /tekxit-server/update_indicator && \
+    echo "${VERSION}" > /tekxit-server/.tekxit-version
+
+# Add entrypoint script (after the download layer so script edits don't invalidate it)
+COPY --chmod=755 ./scripts/entrypoint.sh /entrypoint
 
 WORKDIR /data
 
 EXPOSE 25565
 EXPOSE 25575
 EXPOSE 24454/udp
-HEALTHCHECK --start-period=5m --interval=30s --timeout=10s --retries=3 CMD rcon-cli --host localhost --port "${RCON_PORT:-25575}" --password "${RCON_PASSWORD}" list > /dev/null
+HEALTHCHECK --start-period=10m --interval=30s --timeout=10s --retries=3 CMD rcon-cli --host localhost --port "${RCON_PORT:-25575}" --password "${RCON_PASSWORD}" list > /dev/null
 ENTRYPOINT ["/bin/bash", "/entrypoint"]

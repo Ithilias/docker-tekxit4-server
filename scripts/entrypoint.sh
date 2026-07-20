@@ -4,30 +4,36 @@ set -euo pipefail
 # Constants for default RCON values
 DEFAULT_RCON_PORT=25575
 
+# Set later once the server is launched; may still be empty if TERM arrives
+# during startup (set -u would otherwise crash the shutdown handler)
+SERVER_PID=""
+
 # Function to handle TERM signal
 shutdown_handler() {
     echo "TERM signal received, attempting to shut down the server..."
 
     # Try to gracefully shut down the server using rcon-cli
-    if ! rcon-cli --host localhost --port "${RCON_PORT:-$DEFAULT_RCON_PORT}" --password "${RCON_PASSWORD}" stop; then
-        echo "Failed to send the stop command via rcon-cli, forcing the server to stop..."
-        # Forcefully terminate the server process if rcon-cli fails
-        kill -TERM "$SERVER_PID"
-
-        # Wait a little to see if the process terminates
-        sleep 5
-
-        # If the server still didn't stop, kill it harshly
-        if kill -0 "$SERVER_PID" > /dev/null 2>&1; then
-            echo "Server did not shut down, sending KILL signal..."
-            kill -KILL "$SERVER_PID"
-        fi
-    else
+    if rcon-cli --host localhost --port "${RCON_PORT:-$DEFAULT_RCON_PORT}" --password "${RCON_PASSWORD}" stop; then
         echo "Server is shutting down gracefully..."
+    else
+        echo "Failed to send the stop command via rcon-cli, forcing the server to stop..."
+        kill -TERM "$SERVER_PID" 2>/dev/null || true
     fi
 
-    # Wait for the server to stop
-    wait "$SERVER_PID"
+    # Some mods leave non-daemon threads running after the server has saved
+    # and stopped, keeping the JVM alive until Docker force-kills the whole
+    # container. Wait a bounded time for a clean exit, then kill the JVM.
+    for _ in $(seq 1 60); do
+        if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            echo "Server stopped."
+            exit 0
+        fi
+        sleep 1
+    done
+
+    echo "Server process still alive after 60s, sending KILL signal..."
+    kill -KILL "$SERVER_PID" 2>/dev/null || true
+    exit 0
 }
 
 copy_server_file() {
@@ -160,8 +166,8 @@ set_property "enable-rcon" "true"
 set_property "rcon.port" "${RCON_PORT:-$DEFAULT_RCON_PORT}"
 set_property "rcon.password" "${RCON_PASSWORD}"
 
-# set owner of data dir to minecraft user
-chown -R minecraft:minecraft /data
+# fix ownership only where it's wrong; a full chown -R is slow on large worlds
+find /data \( ! -user minecraft -o ! -group minecraft \) -exec chown minecraft:minecraft {} +
 
 # Extract the line that contains the .jar item
 jar_line=$(grep -m 1 -oP '[\w-]+\.jar' ServerLinux.sh || true)
