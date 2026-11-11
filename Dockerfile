@@ -1,6 +1,6 @@
 FROM eclipse-temurin:17-jre-jammy
 
-ARG VERSION="20.0.4"
+ARG VERSION="20.4.0"
 ARG BUILDTIME
 ARG REVISION
 
